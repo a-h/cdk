@@ -12,22 +12,60 @@ export class StaticSiteStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Create a Lambda function.
-    const versionNumber = new Date().toISOString();
-    const apiGetHandler = new lambdaNode.NodejsFunction(
+    // Default handler if nothing is found.
+    const apiDefaultHandler = new lambdaNode.NodejsFunction(
       this,
-      "apiGetHandler",
+      "apiDefaultHandler",
       {
         runtime: lambda.Runtime.NODEJS_12_X,
         handler: "get",
-        entry: path.join(__dirname, "../handlers/http/api/index.ts"),
+        entry: path.join(__dirname, "../handlers/http/api/default/index.ts"),
         memorySize: 1024,
-        description: `Build time: ${versionNumber}`,
+      }
+    );
+    const apiHelloGetHandler = new lambdaNode.NodejsFunction(
+      this,
+      "apiHelloGetHandler",
+      {
+        runtime: lambda.Runtime.NODEJS_12_X,
+        handler: "get",
+        entry: path.join(__dirname, "../handlers/http/api/hello/index.ts"),
+        memorySize: 1024,
+      }
+    );
+    const apiWorldGetHandler = new lambdaNode.NodejsFunction(
+      this,
+      "apiWorldGetHandler",
+      {
+        runtime: lambda.Runtime.NODEJS_12_X,
+        handler: "get",
+        entry: path.join(__dirname, "../handlers/http/api/world/index.ts"),
+        memorySize: 1024,
       }
     );
     const apiGateway = new apigw.LambdaRestApi(this, "apiGateway", {
-      handler: apiGetHandler,
+      handler: apiDefaultHandler,
+      proxy: false,
     });
+
+    // /api
+    const apiRoute = apiGateway.root.addResource("api")
+
+    // /api/hello
+    const apiHelloRoute = apiRoute.addResource("hello");
+    // GET
+    apiHelloRoute.addMethod(
+      "GET",
+      new apigw.LambdaIntegration(apiHelloGetHandler)
+    );
+
+    // /api/world
+    const apiWorldRoute = apiRoute.addResource("world");
+    // GET
+    apiWorldRoute.addMethod(
+      "GET",
+      new apigw.LambdaIntegration(apiWorldGetHandler)
+    );
 
     // Create a bucket for static content.
     const staticBucket = new s3.Bucket(this, "staticBucket", {
@@ -45,11 +83,11 @@ export class StaticSiteStack extends cdk.Stack {
       versioned: true,
     });
 
-    // Deploy the static resources.
+    // Deploy the static content.
+    // Depending on your process, you might want to deploy the static content yourself
+    // using an s3 sync command instead.
     new s3Deployment.BucketDeployment(this, "staticBucketDeployment", {
-      sources: [
-        s3Deployment.Source.asset(path.join(__dirname, "../root")),
-      ],
+      sources: [s3Deployment.Source.asset(path.join(__dirname, "../web"))],
       destinationKeyPrefix: "/",
       destinationBucket: staticBucket,
     });
@@ -71,9 +109,10 @@ export class StaticSiteStack extends cdk.Stack {
     );
     staticBucket.addToResourcePolicy(cloudfrontS3Access);
 
-    const corsLambda = new cloudfront.experimental.EdgeFunction(
+    // Add a Lambda@Edge to add CORS headers to the API.
+    const apiCorsLambda = new cloudfront.experimental.EdgeFunction(
       this,
-      "corsLambda",
+      "apiCors",
       {
         code: lambda.Code.fromAsset(path.join(__dirname, "./cloudfront")),
         handler: "cors.onOriginResponse",
@@ -81,8 +120,19 @@ export class StaticSiteStack extends cdk.Stack {
       }
     );
 
+    // Add a Lambda@Edge to rewrite paths and add redirects headers to the static site.
+    const staticRewriteLambda = new cloudfront.experimental.EdgeFunction(
+      this,
+      "staticRewrite",
+      {
+        code: lambda.Code.fromAsset(path.join(__dirname, "./cloudfront")),
+        handler: "rewrite.onOriginResponse",
+        runtime: lambda.Runtime.NODEJS_12_X,
+      }
+    );
+
     // Create distribution.
-    new cloudfront.CloudFrontWebDistribution(this, "webDistribution", {
+    const distribution = new cloudfront.CloudFrontWebDistribution(this, "webDistribution", {
       originConfigs: [
         {
           customOriginSource: {
@@ -91,6 +141,12 @@ export class StaticSiteStack extends cdk.Stack {
           originPath: `/${apiGateway.deploymentStage.stageName}`,
           behaviors: [
             {
+              lambdaFunctionAssociations: [
+                {
+                  lambdaFunction: apiCorsLambda,
+                  eventType: cloudfront.LambdaEdgeEventType.ORIGIN_RESPONSE,
+                },
+              ],
               allowedMethods: cloudfront.CloudFrontAllowedMethods.ALL,
               pathPattern: "api/*",
             },
@@ -105,7 +161,7 @@ export class StaticSiteStack extends cdk.Stack {
             {
               lambdaFunctionAssociations: [
                 {
-                  lambdaFunction: corsLambda,
+                  lambdaFunction: staticRewriteLambda,
                   eventType: cloudfront.LambdaEdgeEventType.ORIGIN_RESPONSE,
                 },
               ],
@@ -115,5 +171,6 @@ export class StaticSiteStack extends cdk.Stack {
         },
       ],
     });
+    new cdk.CfnOutput(this, "distributionDomainName", { value: distribution.distributionDomainName });
   }
 }

@@ -1,6 +1,8 @@
-# Welcome to your CDK TypeScript project!
+# Static site
 
-This is a blank project for TypeScript development with CDK.
+```
+npm run cdk deploy --all
+```
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
